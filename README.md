@@ -1,6 +1,6 @@
-# LINE sticker PNG ZIP Discord bot
+# Line Sticker Fetch Bot
+This discord bot fetches line stickers from the given product url and sends back a zip file with the images.
 ## Setup
-
 1. Create an application and bot at https://discord.com/developers/applications.
 2. In **Installation**, configure a guild-install link with the `bot` and `applications.commands` scopes. Give the bot permissions to **View Channels**, **Send Messages**, and **Attach Files** (Permissions integer: `35840`). Use the install link to add it to your server.
 3. Install Python 3.10+ and dependencies:
@@ -14,16 +14,13 @@
    ```
 6. In Discord, run:
    ```text
-   /stickers url:https://store.line.me/stickershop/product/28908433/en folder_name:cute_stickers
+   /stickers url:https://store.line.me/stickershop/product/[example] folder_name:[example]
    ```
-   The reply contains `cute_stickers.zip`, with PNG images in the `cute_stickers/` folder.
+   The reply contains `[example].zip`, with PNG images in the `[example]` folder.
 
 ## Notes
-
-- Works with LINE Store sticker product pages that expose `li.FnStickerPreviewItem[data-preview]` and `staticUrl` (the same structure as the notebook).
-- Downloads **static PNGs** only; animated stickers are not preserved as animations.
-- Creates the ZIP in memory; no files remain on disk.
-- Restricts input URLs to LINE Store and image downloads to LINE's sticker CDN, blocks redirects, and checks download sizes.
+ver1
+- Works with current (2026/11/20) LINE Store sticker product pages.
+- Downloads static PNGs only. Animated stickers are not preserved as animations.
 - The ZIP must fit the relevant Discord channel's file-size limit.
-- If LINE changes the page structure, the CSS selector or metadata extraction may need updating.
 - Only download and redistribute sticker artwork when you have permission to do so.
