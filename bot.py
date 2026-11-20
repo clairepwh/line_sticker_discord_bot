@@ -50,7 +50,6 @@ def check_inputs(url: str, folder_name: str) -> str:
 
 
 def download_limited(session: requests.Session, url: str, max_bytes: int) -> bytes:
-    # No redirects: redirecting to another host would bypass our allowlist.
     with session.get(url, headers=HEADERS, timeout=(10, 20),
                      allow_redirects=False, stream=True) as response:
         response.raise_for_status()
@@ -61,7 +60,7 @@ def download_limited(session: requests.Session, url: str, max_bytes: int) -> byt
         for chunk in response.iter_content(chunk_size=64 * 1024):
             size += len(chunk)
             if size > max_bytes:
-                raise ValueError("An image or webpage exceeded the size limit.")
+                raise ValueError(f"An image or webpage exceeded the size limit.")
             chunks.append(chunk)
         return b"".join(chunks)
 
@@ -78,9 +77,9 @@ def make_sticker_zip(url: str, folder_name: str) -> tuple[io.BytesIO, int]:
         soup = BeautifulSoup(html, "html.parser")
         stickers = soup.select("li.FnStickerPreviewItem[data-preview]")
         if not stickers:
-            raise ValueError("No stickers found. LINE may have changed its page layout.")
+            raise ValueError("No stickers found. Please check if your URL is correct or if your bot is up to date.")
         if len(stickers) > MAX_STICKERS:
-            raise ValueError("This sticker pack has more images than the bot's limit.")
+            raise ValueError(f"This sticker pack has more images than the bot's limit {MAX_STICKERS} stickers.")
 
         with zipfile.ZipFile(output, mode="w", compression=zipfile.ZIP_DEFLATED) as zf:
             for index, element in enumerate(stickers, start=1):
@@ -122,24 +121,22 @@ class StickerBot(discord.Client):
         self.tree = app_commands.CommandTree(self)
 
     async def setup_hook(self) -> None:
-        # Global slash commands may take some time to appear in Discord.
         await self.tree.sync()
 
 
 bot = StickerBot()
 
 
-@bot.tree.command(name="stickers", description="Download LINE stickers as a ZIP of PNGs")
-@app_commands.describe(url="LINE Store sticker product URL", folder_name="Folder inside the ZIP")
+@bot.tree.command(name="stickers", description="Download LINE stickers")
+@app_commands.describe(url="LINE Store sticker product URL", folder_name="Folder name inside the ZIP")
 async def stickers(interaction: discord.Interaction, url: str, folder_name: str) -> None:
     await interaction.response.defer(thinking=True)
     try:
-        # requests is synchronous, so run downloads off the Discord event loop.
         archive, count = await asyncio.to_thread(make_sticker_zip, url, folder_name)
         safe_name = folder_name.strip()
         if archive.getbuffer().nbytes > interaction.filesize_limit:
             await interaction.followup.send(
-                "The ZIP is larger than Discord allows for this upload."
+                "The ZIP is larger than the Discord size limit for this upload."
             )
             return
         with archive:
@@ -155,5 +152,5 @@ if __name__ == "__main__":
     load_dotenv()
     token = os.getenv("DISCORD_BOT_TOKEN")
     if not token:
-        raise RuntimeError("Set DISCORD_BOT_TOKEN in your .env file first.")
+        raise RuntimeError("If this is not your bot, verify with the provider. If this is your bot, set DISCORD_BOT_TOKEN to your bot token in your .env file first.")
     bot.run(token)
