@@ -1,5 +1,3 @@
-"""Discord bot for browsing and sharing LINE sticker previews."""
-
 import asyncio
 import io
 import json
@@ -21,6 +19,7 @@ IMAGE_LIMIT = 3 * 1024 * 1024
 TOTAL_LIMIT = 30 * 1024 * 1024
 PER_PAGE = 10
 PNG_HEADER = b"\x89PNG\r\n\x1a\n"
+LEN_LIMIT = 120
 Image.MAX_IMAGE_PIXELS = 4_000_000
 
 
@@ -28,7 +27,7 @@ def check_host(url, host):
     parsed = urlsplit(url)
     if (parsed.scheme != "https" or parsed.hostname != host
             or parsed.username or parsed.password or parsed.port not in (None, 443)):
-        raise ValueError("不支援的網址。")
+        raise ValueError("網址錯誤。")
 
 
 def check_product(url):
@@ -53,7 +52,7 @@ def fetch(session, url, limit):
         for chunk in response.iter_content(64 * 1024):
             data.extend(chunk)
             if len(data) > limit:
-                raise ValueError("下載檔案超過大小限制。")
+                raise ValueError(f"下載檔案超過大小限制（{limit}）。")
         return bytes(data)
 
 
@@ -83,16 +82,16 @@ def stickers_from_url(url):
         except (KeyError, ValueError, TypeError):
             continue
     if not stickers:
-        raise ValueError("找不到貼圖，LINE STORE 的網頁格式可能已改變。")
-    if len(stickers) > 120:
-        raise ValueError("此貼圖包超過 120 張的處理上限。")
+        raise ValueError("找不到貼圖。")
+    if len(stickers) > LEN_LIMIT:
+        raise ValueError(f"此貼圖包超過處理上限（{LEN_LIMIT} 張）。")
     return title[:100], stickers
 
 
 def make_zip(url, folder):
     folder = folder.strip()
     if not re.fullmatch(r"[\w ()-]{1,60}", folder):
-        raise ValueError("資料夾名稱限 1–60 字，可使用文字、數字、空格、底線、-、()。")
+        raise ValueError("資料夾名稱限 1–60 字，可使用文字、數字、空格、底線、-、(、)。")
     _, stickers = stickers_from_url(url)
     output = io.BytesIO()
     total = 0
@@ -101,7 +100,7 @@ def make_zip(url, folder):
             data = png(session, image_url)
             total += len(data)
             if total > TOTAL_LIMIT:
-                raise ValueError("貼圖包超過 30 MB 的處理上限。")
+                raise ValueError(f"貼圖包超過處理上限（{TOTAL_LIMIT/(1024*1024)} MB）。")
             archive.writestr(f"{folder}/{i:03d}_{sticker_id}.png", data)
     output.seek(0)
     return output, len(stickers)
@@ -179,7 +178,6 @@ def search_packs(keyword):
             except (requests.RequestException, ValueError):
                 pass
 
-        # If search results lack a cover, read the product page's Open Graph image.
         results = []
         for title, url, cover in packs:
             try:
@@ -211,7 +209,7 @@ class Panel(discord.ui.View):
     def embed(self):
         pages = (len(self.stickers) + PER_PAGE - 1) // PER_PAGE
         embed = discord.Embed(title=self.title, url=self.url,
-                              description=f"按編號傳送圖片 · 第 {self.page + 1}/{pages} 頁")
+                              description=f"依照編號傳送圖片 · 第 {self.page + 1}/{pages} 頁")
         embed.set_image(url="attachment://preview.png")
         return embed
 
@@ -298,8 +296,8 @@ class StickerBot(discord.Client):
 bot = StickerBot()
 
 
-@bot.tree.command(name="stickers", description="Download LINE sticker PNGs as a ZIP")
-@app_commands.describe(url="LINE STORE 貼圖網址", folder_name="ZIP 內的資料夾名稱")
+@bot.tree.command(name="stickers", description="Download LINE stickers")
+@app_commands.describe(url="LINE STORE 貼圖網址", folder_name="自訂資料夾名稱")
 async def stickers(interaction: discord.Interaction, url: str, folder_name: str):
     await interaction.response.defer(thinking=True, ephemeral=True)
     try:
@@ -350,5 +348,5 @@ if __name__ == "__main__":
     load_dotenv()
     token = os.getenv("DISCORD_BOT_TOKEN") or os.getenv("DISCORD_TOKEN")
     if not token:
-        raise RuntimeError("請設定 DISCORD_BOT_TOKEN 或 DISCORD_TOKEN。")
+        raise RuntimeError("If this is not your bot, verify with the provider. If this is your bot, set DISCORD_BOT_TOKEN to your bot token in your .env file first.")
     bot.run(token)
