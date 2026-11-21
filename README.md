@@ -49,7 +49,10 @@ Hosting availability and renewal requirements depend on your provider and plan.
 - Sending a PNG does not create a Discord-native sticker. People can invoke the bot without Nitro, subject to channel permissions.
 - Only static PNG previews are supported. Animations and sound are not included.
 - LINE STORE searches use an unofficial, changeable interface. If `/search` fails, find the product URL on LINE STORE and use `/panel` directly.
-- Panels expire after **10 minutes**. Opening a panel downloads its PNGs and generates all preview pages in advance. Page changes and sending a selected PNG reuse the images held in memory. Nothing is permanently stored.
-- Search results show up to five packs per page, with previous/next controls.
-- Maximum **120 stickers** per pack, **3 MB** per PNG, and **30 MB** of downloaded images per pack. Discord's attachment limit still applies. If you are willing to change that, modify the variables at the start of `bot.py`.
+- Panels expire after **10 minutes**. Opening a panel downloads the first 10 stickers and displays the first page before background loading the remaining pages. 
+- Loaded pages and individual PNGs are kept in memory only for that panel. 
+- Preview sheets use compressed JPEG to reduce upload latency. The shared stickers and ZIP files remain PNG. 
+- Switching to a page that is not ready may still take time.
+- Search results show up to five packs per page, with previous/next controls and one-page lookahead. When LINE supplies no cover image, the result may display only its title.
+- Maximum **120 stickers** per pack, **3 MB** per PNG, and **30 MB** of downloaded images per pack. Discord's attachment limit still applies. Page flips must still upload a new preview to Discord, so network latency remains possible.
 - Share artwork only where you have permission to do so. The bot does not grant rights to LINE stickers.

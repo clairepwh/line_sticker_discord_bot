@@ -4,6 +4,8 @@ import json
 import os
 import re
 import zipfile
+import time
+from concurrent.futures import ThreadPoolExecutor
 from urllib.parse import quote, urljoin, urlsplit
 
 import discord
@@ -111,7 +113,7 @@ def contact_sheet(images, page):
     canvas = Image.new("RGB", (700, 300), "#f5f5f5")
     draw = ImageDraw.Draw(canvas)
     font = ImageFont.load_default(size=17)
-    for i, (_, data) in enumerate(images[page * PER_PAGE:(page + 1) * PER_PAGE]):
+    for i, (_, data) in enumerate(images):
         x, y = (i % 5) * 140, (i // 5) * 150
         try:
             with Image.open(io.BytesIO(data)) as source:
@@ -123,24 +125,26 @@ def contact_sheet(images, page):
         draw.text((x + 60, y + 123), str(page * PER_PAGE + i + 1),
                   fill="#222222", font=font)
     output = io.BytesIO()
-    canvas.save(output, "PNG")
+    canvas.save(output, "JPEG", quality=82)
     return output.getvalue()
 
 
-def load_panel(url):
-    title, stickers = stickers_from_url(url)
-    images = []
-    total = 0
+def download_sticker(sticker):
+    sticker_id, url = sticker
     with requests.Session() as session:
-        for sticker_id, image_url in stickers:
-            data = png(session, image_url)
-            total += len(data)
-            if total > TOTAL_LIMIT:
-                raise ValueError(f"貼圖包超過處理上限（{TOTAL_LIMIT // (1024 * 1024)} MB）。")
-            images.append((sticker_id, data))
-    previews = [contact_sheet(images, page)
-                for page in range((len(images) + PER_PAGE - 1) // PER_PAGE)]
-    return title, images, previews
+        return sticker_id, png(session, url)
+
+
+def load_page(stickers, page):
+    with ThreadPoolExecutor(max_workers=3) as pool:
+        images = list(pool.map(download_sticker, stickers[page * PER_PAGE:(page + 1) * PER_PAGE]))
+    return images, contact_sheet(images, page)
+
+
+def load_first_page(url):
+    title, stickers = stickers_from_url(url)
+    return title, stickers, load_page(stickers, 0)
+
 
 def search_packs(keyword, page=0):
     keyword = keyword.strip()
@@ -201,41 +205,62 @@ def search_packs(keyword, page=0):
                     check_host(cover, host)
             except (ValueError, TypeError):
                 cover = ""
-            if not cover:
-                try:
-                    page_soup = BeautifulSoup(fetch(session, url, PAGE_LIMIT), "html.parser")
-                    tag = page_soup.select_one('meta[property="og:image"]')
-                    cover = tag.get("content", "") if tag else ""
-                except (requests.RequestException, ValueError):
-                    cover = ""
             results.append((title, url, cover))
     return results, has_next
+
+def product_cover(url):
+    check_product(url)
+    with requests.Session() as session:
+        soup = BeautifulSoup(fetch(session, url, PAGE_LIMIT), "html.parser")
+    tag = soup.select_one('meta[property="og:image"]')
+    cover = urljoin(url, tag.get("content", "")) if tag else ""
+    host = urlsplit(cover).hostname
+    if host not in ("store.line.me", "stickershop.line-scdn.net"):
+        return ""
+    check_host(cover, host)
+    return cover
+
 
 def error_message(exc):
     return str(exc) if isinstance(exc, ValueError) else "連線或圖片處理失敗，請稍後再試。"
 
 
 class Panel(discord.ui.View):
-    def __init__(self, title, url, images, previews):
+    def __init__(self, title, url, stickers, first_page):
         super().__init__(timeout=600)
-        self.title, self.url = title, url
-        self.images, self.previews = images, previews
+        self.title, self.url, self.stickers = title, url, stickers
+        self.pages = (len(stickers) + PER_PAGE - 1) // PER_PAGE
+        self.cache = {0: first_page}
+        self.tasks = {}
+        self.limit = asyncio.Semaphore(1)
+        self.total = sum(len(data) for _, data in first_page[0])
         self.page = 0
         self.buttons()
 
+    def preload(self):
+        for page in range(1, self.pages):
+            self.tasks[page] = asyncio.create_task(self.load(page))
+
+    async def load(self, page):
+        async with self.limit:
+            data = await asyncio.to_thread(load_page, self.stickers, page)
+            self.total += sum(len(image) for _, image in data[0])
+            if self.total > TOTAL_LIMIT:
+                raise ValueError("此貼圖包超過處理大小限制。")
+            self.cache[page] = data
+
     def embed(self):
         embed = discord.Embed(title=self.title, url=self.url,
-                              description=f"依照編號傳送圖片 · 第 {self.page + 1}/{len(self.previews)} 頁")
-        embed.set_image(url="attachment://preview.png")
+                              description=f"依照編號傳送圖片 · 第 {self.page + 1}/{self.pages} 頁")
+        embed.set_image(url="attachment://preview.jpg")
         return embed
 
     def preview_file(self):
-        return discord.File(io.BytesIO(self.previews[self.page]), filename="preview.png")
+        return discord.File(io.BytesIO(self.cache[self.page][1]), filename="preview.jpg")
 
     def buttons(self):
         self.clear_items()
-        for offset, (sticker_id, data) in enumerate(
-                self.images[self.page * PER_PAGE:(self.page + 1) * PER_PAGE]):
+        for offset, (sticker_id, data) in enumerate(self.cache[self.page][0]):
             number = self.page * PER_PAGE + offset + 1
             button = discord.ui.Button(label=str(number), row=offset // 5)
 
@@ -252,30 +277,82 @@ class Panel(discord.ui.View):
 
         for step, label in ((-1, "上一頁"), (1, "下一頁")):
             button = discord.ui.Button(label=label, style=discord.ButtonStyle.primary,
-                                       disabled=not 0 <= self.page + step < len(self.previews), row=2)
+                                       disabled=not 0 <= self.page + step < self.pages, row=2)
 
             async def change(interaction, direction=step):
-                self.page += direction
-                self.buttons()
-                await interaction.response.edit_message(
-                    embed=self.embed(), attachments=[self.preview_file()], view=self)
+                await interaction.response.defer()
+                next_page = self.page + direction
+                start = time.perf_counter()
+                try:
+                    if next_page not in self.cache:
+                        await self.tasks[next_page]
+                    loaded = time.perf_counter()
+                    self.page = next_page
+                    self.buttons()
+                    await interaction.edit_original_response(
+                        embed=self.embed(), attachments=[self.preview_file()], view=self)
+                    print(f"面板翻頁：載入等待 {loaded-start:.2f}s，Discord 更新 {time.perf_counter()-loaded:.2f}s")
+                except (requests.RequestException, ValueError, OSError, discord.HTTPException) as exc:
+                    await interaction.followup.send(f"無法切換頁面：{error_message(exc)}", ephemeral=True)
 
             button.callback = change
             self.add_item(button)
 
 
 async def show_panel(interaction, url):
-    title, images, previews = await asyncio.to_thread(load_panel, url)
-    view = Panel(title, url, images, previews)
+    title, stickers, first_page = await asyncio.to_thread(load_first_page, url)
+    view = Panel(title, url, stickers, first_page)
     await interaction.followup.send(embed=view.embed(), file=view.preview_file(),
                                     view=view, ephemeral=True)
+    view.preload()
 
 
 class Results(discord.ui.View):
     def __init__(self, keyword, packs, has_next):
         super().__init__(timeout=600)
         self.keyword, self.page = keyword, 0
+        self.cache = {0: (packs, has_next)}
+        self.tasks = {}
+        self.cover_tasks = {}
+        self.lock = asyncio.Lock()
         self.refresh(packs, has_next)
+
+    def preload(self):
+        next_page = self.page + 1
+        if self.more and next_page not in self.cache and next_page not in self.tasks:
+            self.tasks[next_page] = asyncio.create_task(
+                asyncio.to_thread(search_packs, self.keyword, next_page))
+
+    def preload_covers(self, page):
+        if page not in self.cover_tasks:
+            self.cover_tasks[page] = asyncio.create_task(self.fill_covers(page))
+
+    async def fill_covers(self, page):
+        packs, more = self.cache[page]
+        missing = [(i, url) for i, (_, url, cover) in enumerate(packs) if not cover]
+        if not missing:
+            return
+
+        async def load(i, url):
+            try:
+                return i, await asyncio.to_thread(product_cover, url)
+            except (requests.RequestException, ValueError, TypeError):
+                return i, ""
+
+        results = await asyncio.gather(*(load(i, url) for i, url in missing))
+        packs = list(packs)
+        for i, cover in results:
+            if cover:
+                title, url, _ = packs[i]
+                packs[i] = (title, url, cover)
+        self.cache[page] = (packs, more)
+        async with self.lock:
+            if self.page == page:
+                self.packs = packs
+                try:
+                    await self.message.edit(embeds=self.embeds())
+                except discord.HTTPException:
+                    pass
 
     def embeds(self):
         embeds = []
@@ -290,7 +367,7 @@ class Results(discord.ui.View):
         return f"「{discord.utils.escape_markdown(self.keyword)}」的搜尋結果 · 第 {self.page + 1} 頁"
 
     def refresh(self, packs, has_next):
-        self.packs = packs
+        self.packs, self.more = packs, has_next
         self.clear_items()
         selector = discord.ui.Select(placeholder="選擇貼圖包", row=0, options=[
             discord.SelectOption(label=title, value=str(i)) for i, (title, _, _) in enumerate(packs)])
@@ -310,17 +387,25 @@ class Results(discord.ui.View):
 
             async def change(interaction, direction=step):
                 await interaction.response.defer()
-                new_page = self.page + direction
+                next_page = self.page + direction
                 try:
-                    packs, more = await asyncio.to_thread(search_packs, self.keyword, new_page)
+                    if next_page not in self.cache:
+                        if next_page in self.tasks:
+                            self.cache[next_page] = await self.tasks.pop(next_page)
+                        else:
+                            self.cache[next_page] = await asyncio.to_thread(search_packs, self.keyword, next_page)
+                    packs, more = self.cache[next_page]
                     if not packs:
                         await interaction.followup.send("沒有更多搜尋結果了。", ephemeral=True)
                         return
-                    self.page = new_page
-                    self.refresh(packs, more)
-                    await interaction.edit_original_response(
-                        content=self.caption(), embeds=self.embeds(), view=self)
-                except (requests.RequestException, ValueError) as exc:
+                    async with self.lock:
+                        self.page = next_page
+                        self.refresh(packs, more)
+                        await interaction.edit_original_response(
+                            content=self.caption(), embeds=self.embeds(), view=self)
+                    self.preload()
+                    self.preload_covers(next_page)
+                except (requests.RequestException, ValueError, discord.HTTPException) as exc:
                     await interaction.followup.send(f"無法切換搜尋結果：{error_message(exc)}", ephemeral=True)
 
             button.callback = change
@@ -376,8 +461,10 @@ async def search(interaction: discord.Interaction, keyword: str):
                 ephemeral=True)
             return
         view = Results(keyword, packs, has_next)
-        await interaction.followup.send(content=view.caption(), embeds=view.embeds(),
-                                        view=view, ephemeral=True)
+        view.message = await interaction.followup.send(content=view.caption(), embeds=view.embeds(),
+                                                       view=view, ephemeral=True, wait=True)
+        view.preload()
+        view.preload_covers(0)
     except (requests.RequestException, ValueError) as exc:
         await interaction.followup.send(f"搜尋失敗：{error_message(exc)}", ephemeral=True)
 
