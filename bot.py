@@ -18,6 +18,7 @@ PAGE_LIMIT = 4 * 1024 * 1024
 IMAGE_LIMIT = 3 * 1024 * 1024
 TOTAL_LIMIT = 30 * 1024 * 1024
 PER_PAGE = 10
+SEARCH_PER_PAGE = 5
 PNG_HEADER = b"\x89PNG\r\n\x1a\n"
 LEN_LIMIT = 120
 Image.MAX_IMAGE_PIXELS = 4_000_000
@@ -100,45 +101,57 @@ def make_zip(url, folder):
             data = png(session, image_url)
             total += len(data)
             if total > TOTAL_LIMIT:
-                raise ValueError(f"貼圖包超過處理上限（{TOTAL_LIMIT/(1024*1024)} MB）。")
+                raise ValueError(f"貼圖包超過處理上限（{TOTAL_LIMIT // (1024 * 1024)} MB）。")
             archive.writestr(f"{folder}/{i:03d}_{sticker_id}.png", data)
     output.seek(0)
     return output, len(stickers)
 
 
-def contact_sheet(stickers, page):
+def contact_sheet(images, page):
     canvas = Image.new("RGB", (700, 300), "#f5f5f5")
     draw = ImageDraw.Draw(canvas)
     font = ImageFont.load_default(size=17)
-    with requests.Session() as session:
-        for i, (_, url) in enumerate(stickers[page * PER_PAGE:(page + 1) * PER_PAGE]):
-            x, y = (i % 5) * 140, (i // 5) * 150
-            try:
-                with Image.open(io.BytesIO(png(session, url))) as source:
-                    image = source.convert("RGBA")
-                    image.thumbnail((128, 115), Image.Resampling.LANCZOS)
-            except (OSError, Image.DecompressionBombError) as exc:
-                raise ValueError("無法讀取貼圖圖片。") from exc
-            canvas.paste(image, (x + (140 - image.width) // 2, y + 3), image)
-            draw.text((x + 60, y + 123), str(page * PER_PAGE + i + 1),
-                      fill="#222222", font=font)
+    for i, (_, data) in enumerate(images[page * PER_PAGE:(page + 1) * PER_PAGE]):
+        x, y = (i % 5) * 140, (i // 5) * 150
+        try:
+            with Image.open(io.BytesIO(data)) as source:
+                image = source.convert("RGBA")
+                image.thumbnail((128, 115), Image.Resampling.LANCZOS)
+        except (OSError, Image.DecompressionBombError) as exc:
+            raise ValueError("無法讀取貼圖圖片。") from exc
+        canvas.paste(image, (x + (140 - image.width) // 2, y + 3), image)
+        draw.text((x + 60, y + 123), str(page * PER_PAGE + i + 1),
+                  fill="#222222", font=font)
     output = io.BytesIO()
     canvas.save(output, "PNG")
-    output.seek(0)
-    return output
+    return output.getvalue()
 
 
-def search_packs(keyword):
+def load_panel(url):
+    title, stickers = stickers_from_url(url)
+    images = []
+    total = 0
+    with requests.Session() as session:
+        for sticker_id, image_url in stickers:
+            data = png(session, image_url)
+            total += len(data)
+            if total > TOTAL_LIMIT:
+                raise ValueError(f"貼圖包超過處理上限（{TOTAL_LIMIT // (1024 * 1024)} MB）。")
+            images.append((sticker_id, data))
+    previews = [contact_sheet(images, page)
+                for page in range((len(images) + PER_PAGE - 1) // PER_PAGE)]
+    return title, images, previews
+
+def search_packs(keyword, page=0):
     keyword = keyword.strip()
     if not 1 <= len(keyword) <= 60:
         raise ValueError("搜尋字詞須為 1–60 個字。")
     packs = []
     seen = set()
     with requests.Session() as session:
-        # LINE has no stable public search API; try its current endpoint first.
         try:
             api = (f"https://store.line.me/api/search/sticker?query={quote(keyword)}"
-                   "&offset=0&limit=10&type=ALL&includeFacets=false")
+                   f"&offset={page * SEARCH_PER_PAGE}&limit=10&type=ALL&includeFacets=false")
             items = json.loads(fetch(session, api, PAGE_LIMIT)).get("items", [])
             for item in items:
                 pack_id = str(item.get("id", ""))
@@ -149,15 +162,14 @@ def search_packs(keyword):
                 cover = item.get("mainImageUrl") or item.get("imageUrl") or ""
                 packs.append((title, f"https://store.line.me/stickershop/product/{pack_id}/zh-Hant",
                               cover if isinstance(cover, str) and cover.startswith("https://") else ""))
-                if len(packs) == 5:
+                if len(packs) > SEARCH_PER_PAGE:
                     break
         except (requests.RequestException, ValueError, TypeError, AttributeError):
             pass
 
         if not packs:
-            # Fallback for search pages whose results are present in HTML.
             try:
-                url = f"https://store.line.me/search/sticker/zh-Hant?q={quote(keyword)}"
+                url = f"https://store.line.me/search/sticker/zh-Hant?q={quote(keyword)}&page={page + 1}"
                 soup = BeautifulSoup(fetch(session, url, PAGE_LIMIT), "html.parser")
                 for link in soup.select('a[href*="/stickershop/product/"]'):
                     href = urljoin("https://store.line.me", link.get("href", ""))
@@ -173,13 +185,14 @@ def search_packs(keyword):
                     title = link.get_text(" ", strip=True) or (img.get("alt", "") if img else "")
                     cover = urljoin("https://store.line.me", (img.get("data-src") or img.get("src") or "")) if img else ""
                     packs.append(((title or f"貼圖 {pack_id}")[:100], href, cover))
-                    if len(packs) == 5:
+                    if len(packs) > SEARCH_PER_PAGE:
                         break
             except (requests.RequestException, ValueError):
                 pass
 
+        has_next = len(packs) > SEARCH_PER_PAGE
         results = []
-        for title, url, cover in packs:
+        for title, url, cover in packs[:SEARCH_PER_PAGE]:
             try:
                 host = urlsplit(cover).hostname
                 if host not in ("store.line.me", "stickershop.line-scdn.net"):
@@ -190,98 +203,128 @@ def search_packs(keyword):
                 cover = ""
             if not cover:
                 try:
-                    page = BeautifulSoup(fetch(session, url, PAGE_LIMIT), "html.parser")
-                    tag = page.select_one('meta[property="og:image"]')
+                    page_soup = BeautifulSoup(fetch(session, url, PAGE_LIMIT), "html.parser")
+                    tag = page_soup.select_one('meta[property="og:image"]')
                     cover = tag.get("content", "") if tag else ""
                 except (requests.RequestException, ValueError):
                     cover = ""
             results.append((title, url, cover))
-    return results
+    return results, has_next
+
+def error_message(exc):
+    return str(exc) if isinstance(exc, ValueError) else "連線或圖片處理失敗，請稍後再試。"
 
 
 class Panel(discord.ui.View):
-    def __init__(self, title, url, stickers):
+    def __init__(self, title, url, images, previews):
         super().__init__(timeout=600)
-        self.title, self.url, self.stickers = title, url, stickers
+        self.title, self.url = title, url
+        self.images, self.previews = images, previews
         self.page = 0
         self.buttons()
 
     def embed(self):
-        pages = (len(self.stickers) + PER_PAGE - 1) // PER_PAGE
         embed = discord.Embed(title=self.title, url=self.url,
-                              description=f"依照編號傳送圖片 · 第 {self.page + 1}/{pages} 頁")
+                              description=f"依照編號傳送圖片 · 第 {self.page + 1}/{len(self.previews)} 頁")
         embed.set_image(url="attachment://preview.png")
         return embed
 
+    def preview_file(self):
+        return discord.File(io.BytesIO(self.previews[self.page]), filename="preview.png")
+
     def buttons(self):
         self.clear_items()
-        for offset, (sticker_id, url) in enumerate(
-                self.stickers[self.page * PER_PAGE:(self.page + 1) * PER_PAGE]):
+        for offset, (sticker_id, data) in enumerate(
+                self.images[self.page * PER_PAGE:(self.page + 1) * PER_PAGE]):
             number = self.page * PER_PAGE + offset + 1
             button = discord.ui.Button(label=str(number), row=offset // 5)
 
-            async def send(interaction, selected_url=url, selected_id=sticker_id):
-                await interaction.response.defer(thinking=True)
-                try:
-                    with requests.Session() as session:
-                        data = await asyncio.to_thread(png, session, selected_url)
-                    if len(data) > interaction.filesize_limit:
-                        raise ValueError("圖片超過 Discord 附件大小限制。")
-                    await interaction.followup.send(
-                        file=discord.File(io.BytesIO(data), filename=f"sticker_{selected_id}.png"))
-                except (requests.RequestException, ValueError) as exc:
-                    await interaction.followup.send(f"無法傳送圖片：{exc}", ephemeral=True)
+            async def send(interaction, selected_data=data, selected_id=sticker_id):
+                await interaction.response.defer()
+                if len(selected_data) > interaction.filesize_limit:
+                    await interaction.followup.send("圖片超過 Discord 附件大小限制。", ephemeral=True)
+                    return
+                await interaction.followup.send(
+                    file=discord.File(io.BytesIO(selected_data), filename=f"sticker_{selected_id}.png"))
 
             button.callback = send
             self.add_item(button)
-        for offset, label in ((-1, "上一頁"), (1, "下一頁")):
-            button = discord.ui.Button(label=label, style=discord.ButtonStyle.primary,
-                                       disabled=not 0 <= self.page + offset <
-                                       (len(self.stickers) + PER_PAGE - 1) // PER_PAGE, row=2)
 
-            async def change(interaction, step=offset):
-                await interaction.response.defer()
-                try:
-                    new_page = self.page + step
-                    image = await asyncio.to_thread(contact_sheet, self.stickers, new_page)
-                    self.page = new_page
-                    self.buttons()
-                    await interaction.edit_original_response(
-                        embed=self.embed(), attachments=[discord.File(image, filename="preview.png")], view=self)
-                except (requests.RequestException, ValueError, OSError) as exc:
-                    await interaction.followup.send(f"無法切換頁面：{exc}", ephemeral=True)
+        for step, label in ((-1, "上一頁"), (1, "下一頁")):
+            button = discord.ui.Button(label=label, style=discord.ButtonStyle.primary,
+                                       disabled=not 0 <= self.page + step < len(self.previews), row=2)
+
+            async def change(interaction, direction=step):
+                self.page += direction
+                self.buttons()
+                await interaction.response.edit_message(
+                    embed=self.embed(), attachments=[self.preview_file()], view=self)
 
             button.callback = change
             self.add_item(button)
 
 
-async def show_panel(interaction, url, replace=False):
-    title, stickers = await asyncio.to_thread(stickers_from_url, url)
-    view = Panel(title, url, stickers)
-    image = await asyncio.to_thread(contact_sheet, stickers, 0)
-    file = discord.File(image, filename="preview.png")
-    if replace:
-        await interaction.edit_original_response(content=None, embed=view.embed(),
-                                                 attachments=[file], view=view)
-    else:
-        await interaction.followup.send(embed=view.embed(), file=file, view=view, ephemeral=True)
+async def show_panel(interaction, url):
+    title, images, previews = await asyncio.to_thread(load_panel, url)
+    view = Panel(title, url, images, previews)
+    await interaction.followup.send(embed=view.embed(), file=view.preview_file(),
+                                    view=view, ephemeral=True)
 
 
 class Results(discord.ui.View):
-    def __init__(self, packs):
+    def __init__(self, keyword, packs, has_next):
         super().__init__(timeout=600)
-        selector = discord.ui.Select(placeholder="選擇貼圖包", options=[
+        self.keyword, self.page = keyword, 0
+        self.refresh(packs, has_next)
+
+    def embeds(self):
+        embeds = []
+        for i, (title, url, cover) in enumerate(self.packs, 1):
+            embed = discord.Embed(title=f"{self.page * SEARCH_PER_PAGE + i}. {title}", url=url)
+            if cover:
+                embed.set_thumbnail(url=cover)
+            embeds.append(embed)
+        return embeds
+
+    def caption(self):
+        return f"「{discord.utils.escape_markdown(self.keyword)}」的搜尋結果 · 第 {self.page + 1} 頁"
+
+    def refresh(self, packs, has_next):
+        self.packs = packs
+        self.clear_items()
+        selector = discord.ui.Select(placeholder="選擇貼圖包", row=0, options=[
             discord.SelectOption(label=title, value=str(i)) for i, (title, _, _) in enumerate(packs)])
 
         async def selected(interaction):
-            await interaction.response.defer()
+            await interaction.response.defer(thinking=True, ephemeral=True)
             try:
-                await show_panel(interaction, packs[int(selector.values[0])][1], replace=True)
+                await show_panel(interaction, self.packs[int(selector.values[0])][1])
             except (requests.RequestException, ValueError, OSError) as exc:
-                await interaction.followup.send(f"無法開啟貼圖包：{exc}", ephemeral=True)
+                await interaction.followup.send(f"無法開啟貼圖包：{error_message(exc)}", ephemeral=True)
 
         selector.callback = selected
         self.add_item(selector)
+        for step, label in ((-1, "上一頁"), (1, "下一頁")):
+            button = discord.ui.Button(label=label, style=discord.ButtonStyle.primary,
+                                       disabled=(self.page == 0 if step == -1 else not has_next), row=1)
+
+            async def change(interaction, direction=step):
+                await interaction.response.defer()
+                new_page = self.page + direction
+                try:
+                    packs, more = await asyncio.to_thread(search_packs, self.keyword, new_page)
+                    if not packs:
+                        await interaction.followup.send("沒有更多搜尋結果了。", ephemeral=True)
+                        return
+                    self.page = new_page
+                    self.refresh(packs, more)
+                    await interaction.edit_original_response(
+                        content=self.caption(), embeds=self.embeds(), view=self)
+                except (requests.RequestException, ValueError) as exc:
+                    await interaction.followup.send(f"無法切換搜尋結果：{error_message(exc)}", ephemeral=True)
+
+            button.callback = change
+            self.add_item(button)
 
 
 class StickerBot(discord.Client):
@@ -296,7 +339,7 @@ class StickerBot(discord.Client):
 bot = StickerBot()
 
 
-@bot.tree.command(name="stickers", description="Download LINE stickers")
+@bot.tree.command(name="stickers", description="下載 LINE 貼圖並打包成 ZIP")
 @app_commands.describe(url="LINE STORE 貼圖網址", folder_name="自訂資料夾名稱")
 async def stickers(interaction: discord.Interaction, url: str, folder_name: str):
     await interaction.response.defer(thinking=True, ephemeral=True)
@@ -308,45 +351,40 @@ async def stickers(interaction: discord.Interaction, url: str, folder_name: str)
                                         file=discord.File(archive, filename=f"{folder_name.strip()}.zip"),
                                         ephemeral=True)
     except (requests.RequestException, ValueError) as exc:
-        await interaction.followup.send(f"下載失敗：{exc}", ephemeral=True)
+        await interaction.followup.send(f"下載失敗：{error_message(exc)}", ephemeral=True)
 
 
-@bot.tree.command(name="panel", description="Preview LINE stickers and choose one to send")
+@bot.tree.command(name="panel", description="預覽 LINE 貼圖並選擇要發送的圖片")
 @app_commands.describe(url="LINE STORE 貼圖網址")
 async def panel(interaction: discord.Interaction, url: str):
     await interaction.response.defer(thinking=True, ephemeral=True)
     try:
         await show_panel(interaction, url)
     except (requests.RequestException, ValueError, OSError) as exc:
-        await interaction.followup.send(f"開啟面板失敗：{exc}", ephemeral=True)
+        await interaction.followup.send(f"開啟面板失敗：{error_message(exc)}", ephemeral=True)
 
 
-@bot.tree.command(name="search", description="Search LINE sticker packs")
+@bot.tree.command(name="search", description="搜尋 LINE 貼圖包")
 @app_commands.describe(keyword="貼圖名稱或關鍵字")
 async def search(interaction: discord.Interaction, keyword: str):
     await interaction.response.defer(thinking=True, ephemeral=True)
     try:
-        packs = await asyncio.to_thread(search_packs, keyword)
+        packs, has_next = await asyncio.to_thread(search_packs, keyword)
         if not packs:
             await interaction.followup.send(
                 "目前無法取得 LINE 搜尋結果，可先在 LINE STORE 找到網址，再使用 `/panel`。",
                 ephemeral=True)
             return
-        embeds = []
-        for i, (title, url, cover) in enumerate(packs, 1):
-            embed = discord.Embed(title=f"{i}. {title}", url=url)
-            if cover:
-                embed.set_thumbnail(url=cover)
-            embeds.append(embed)
-        await interaction.followup.send(content=f"「{discord.utils.escape_markdown(keyword)}」的搜尋結果",
-                                        embeds=embeds, view=Results(packs), ephemeral=True)
+        view = Results(keyword, packs, has_next)
+        await interaction.followup.send(content=view.caption(), embeds=view.embeds(),
+                                        view=view, ephemeral=True)
     except (requests.RequestException, ValueError) as exc:
-        await interaction.followup.send(f"搜尋失敗：{exc}", ephemeral=True)
+        await interaction.followup.send(f"搜尋失敗：{error_message(exc)}", ephemeral=True)
 
 
 if __name__ == "__main__":
     load_dotenv()
     token = os.getenv("DISCORD_BOT_TOKEN") or os.getenv("DISCORD_TOKEN")
     if not token:
-        raise RuntimeError("If this is not your bot, verify with the provider. If this is your bot, set DISCORD_BOT_TOKEN to your bot token in your .env file first.")
+        raise RuntimeError("請設定 DISCORD_BOT_TOKEN 或 DISCORD_TOKEN。")
     bot.run(token)
