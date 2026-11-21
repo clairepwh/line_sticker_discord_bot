@@ -299,18 +299,18 @@ class Panel(discord.ui.View):
             self.add_item(button)
 
 
-async def show_panel(interaction, url):
+async def show_panel(interaction, url, private=True):
     title, stickers, first_page = await asyncio.to_thread(load_first_page, url)
     view = Panel(title, url, stickers, first_page)
     await interaction.followup.send(embed=view.embed(), file=view.preview_file(),
-                                    view=view, ephemeral=True)
+                                    view=view, ephemeral=private)
     view.preload()
 
 
 class Results(discord.ui.View):
-    def __init__(self, keyword, packs, has_next):
+    def __init__(self, keyword, packs, has_next, private=True):
         super().__init__(timeout=600)
-        self.keyword, self.page = keyword, 0
+        self.keyword, self.page, self.private = keyword, 0, private
         self.cache = {0: (packs, has_next)}
         self.tasks = {}
         self.cover_tasks = {}
@@ -373,9 +373,9 @@ class Results(discord.ui.View):
             discord.SelectOption(label=title, value=str(i)) for i, (title, _, _) in enumerate(packs)])
 
         async def selected(interaction):
-            await interaction.response.defer(thinking=True, ephemeral=True)
+            await interaction.response.defer(thinking=True, ephemeral=self.private)
             try:
-                await show_panel(interaction, self.packs[int(selector.values[0])][1])
+                await show_panel(interaction, self.packs[int(selector.values[0])][1], self.private)
             except (requests.RequestException, ValueError, OSError) as exc:
                 await interaction.followup.send(f"無法開啟貼圖包：{error_message(exc)}", ephemeral=True)
 
@@ -422,51 +422,75 @@ class StickerBot(discord.Client):
 
 
 bot = StickerBot()
+PUBLIC = [app_commands.Choice(name="Public", value="yes")]
 
 
 @bot.tree.command(name="stickers", description="下載 LINE 貼圖並打包成 ZIP")
-@app_commands.describe(url="LINE STORE 貼圖網址", folder_name="自訂資料夾名稱")
-async def stickers(interaction: discord.Interaction, url: str, folder_name: str):
-    await interaction.response.defer(thinking=True, ephemeral=True)
+@app_commands.describe(url="LINE STORE 貼圖網址", folder_name="自訂資料夾名稱",
+                       public="選擇「Public」讓其他人也能看到 ZIP（預設私人）")
+@app_commands.choices(public=PUBLIC)
+async def stickers(interaction: discord.Interaction, url: str, folder_name: str, public: str = None):
+    private = public is None
+    await interaction.response.defer(thinking=True, ephemeral=private)
     try:
         archive, count = await asyncio.to_thread(make_zip, url, folder_name)
         if archive.getbuffer().nbytes > interaction.filesize_limit:
             raise ValueError("ZIP 超過 Discord 附件大小限制。")
         await interaction.followup.send(f"已下載 {count} 張 PNG。",
                                         file=discord.File(archive, filename=f"{folder_name.strip()}.zip"),
-                                        ephemeral=True)
+                                        ephemeral=private)
     except (requests.RequestException, ValueError) as exc:
-        await interaction.followup.send(f"下載失敗：{error_message(exc)}", ephemeral=True)
+        await interaction.followup.send(f"下載失敗：{error_message(exc)}", ephemeral=private)
 
 
 @bot.tree.command(name="panel", description="預覽 LINE 貼圖並選擇要發送的圖片")
-@app_commands.describe(url="LINE STORE 貼圖網址")
-async def panel(interaction: discord.Interaction, url: str):
-    await interaction.response.defer(thinking=True, ephemeral=True)
+@app_commands.describe(url="LINE STORE 貼圖網址", public="選擇「Public」讓其他人也能使用面板（預設私人）")
+@app_commands.choices(public=PUBLIC)
+async def panel(interaction: discord.Interaction, url: str, public: str = None):
+    private = public is None
+    await interaction.response.defer(thinking=True, ephemeral=private)
     try:
-        await show_panel(interaction, url)
+        await show_panel(interaction, url, private)
     except (requests.RequestException, ValueError, OSError) as exc:
-        await interaction.followup.send(f"開啟面板失敗：{error_message(exc)}", ephemeral=True)
+        await interaction.followup.send(f"開啟面板失敗：{error_message(exc)}", ephemeral=private)
 
 
 @bot.tree.command(name="search", description="搜尋 LINE 貼圖包")
-@app_commands.describe(keyword="貼圖名稱或關鍵字")
-async def search(interaction: discord.Interaction, keyword: str):
-    await interaction.response.defer(thinking=True, ephemeral=True)
+@app_commands.describe(keyword="貼圖名稱或關鍵字", public="選擇「Public」分享搜尋結果（預設私人）")
+@app_commands.choices(public=PUBLIC)
+async def search(interaction: discord.Interaction, keyword: str, public: str = None):
+    private = public is None
+    await interaction.response.defer(thinking=True, ephemeral=private)
     try:
         packs, has_next = await asyncio.to_thread(search_packs, keyword)
         if not packs:
             await interaction.followup.send(
                 "目前無法取得 LINE 搜尋結果，可先在 LINE STORE 找到網址，再使用 `/panel`。",
-                ephemeral=True)
+                ephemeral=private)
             return
-        view = Results(keyword, packs, has_next)
+        view = Results(keyword, packs, has_next, private)
         view.message = await interaction.followup.send(content=view.caption(), embeds=view.embeds(),
-                                                       view=view, ephemeral=True, wait=True)
+                                                       view=view, ephemeral=private, wait=True)
         view.preload()
         view.preload_covers(0)
     except (requests.RequestException, ValueError) as exc:
-        await interaction.followup.send(f"搜尋失敗：{error_message(exc)}", ephemeral=True)
+        await interaction.followup.send(f"搜尋失敗：{error_message(exc)}", ephemeral=private)
+
+
+@bot.tree.command(name="help", description="查看貼圖機器人使用說明")
+@app_commands.describe(public="選擇「公開」讓其他人也能看到說明（預設私人）")
+@app_commands.choices(public=PUBLIC)
+async def help(interaction: discord.Interaction, public: str = None):
+    embed = discord.Embed(title="LINE 貼圖機器人使用說明", description=(
+        "`/search keyword`：搜尋 LINE 貼圖包，每頁 5 個結果，可翻頁或開啟貼圖面板。\n\n"
+        "`/panel url`：輸入 LINE STORE 貼圖網址，預覽貼圖並點擊對應編號發送圖片。\n\n"
+        "`/stickers url folder_name`：將整包貼圖下載為 PNG，並打包成 ZIP。\n\n"
+        "`/help`：查看這份說明。\n\n"
+        "私人／公開：預設使用動作只有自己看得到。若想分享給聊天室，在指令最後加入 `public`，並從選單選擇「公開」。從公開搜尋結果開啟的貼圖面板也會公開。\n"
+        "無論面板是否公開，點擊編號發出的 PNG 都會公開在頻道。\n\n"
+        "貼圖面板每頁 10 張，約 10 分鐘後按鈕會失效。"
+    ))
+    await interaction.response.send_message(embed=embed, ephemeral=public is None)
 
 
 if __name__ == "__main__":

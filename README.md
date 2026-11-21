@@ -2,16 +2,18 @@
 A Python Discord bot for browsing LINE sticker packs and sharing static PNG previews.
 
 ## Commands
-
 | Command | Usage |
 | --- | --- |
-| `/stickers url folder_name` | Downloads a sticker pack as a ZIP containing numbered PNG files. |
-| `/panel url` | Shows 10 sticker previews per page. Click a number to have the bot post that PNG to the channel. |
-| `/search keyword` | Searches for LINE sticker packs, showing five names and covers per page with previous/next buttons. Selecting a pack opens its panel. |
+| `/stickers url folder_name [public]` | Downloads a sticker pack as a ZIP containing numbered PNG files. |
+| `/panel url [public]` | Shows 10 sticker previews per page. Click a number to have the bot post that PNG to the channel. |
+| `/search keyword [public]` | Searches for LINE sticker packs, showing five names and covers per page with previous/next buttons. Selecting a pack opens its panel. |
+| `/help [public]` | Shows a guide to the bot and its commands. |
 
-`url` must be a LINE STORE sticker product link, such as `https://store.line.me/stickershop/product/PRODUCT_ID/zh-Hant` (replace `PRODUCT_ID` with the actual number).
+`url` must be a LINE STORE sticker product link, as `https://store.line.me/stickershop/product/[PRODUCT_ID]`. Replace `PRODUCT_ID` as it is in the actual link.
 
-The ZIP, search results, and browsing panel are **private** to the command user. Selected PNGs are posted **publicly** in the channel. Opening a pack from search keeps the search results available.
+Downloads, search results and panels are private by default. To share a ZIP, search result, panel, or guide with the channel, add the optional `public` field at the end of the slash command and select the intended visibility choice from its choice menu. A panel opened from search inherits the same visibility, and the search message stays available. **Selected PNGs are always posted publicly** in the channel.
+
+Example: `/search keyword:貓咪 public:public`. Omit `public` to keep the results private.
 
 ## Setup
 
@@ -49,10 +51,9 @@ Hosting availability and renewal requirements depend on your provider and plan.
 - Sending a PNG does not create a Discord-native sticker. People can invoke the bot without Nitro, subject to channel permissions.
 - Only static PNG previews are supported. Animations and sound are not included.
 - LINE STORE searches use an unofficial, changeable interface. If `/search` fails, find the product URL on LINE STORE and use `/panel` directly.
-- Panels expire after **10 minutes**. Opening a panel downloads the first 10 stickers and displays the first page before background loading the remaining pages. 
-- Loaded pages and individual PNGs are kept in memory only for that panel. 
-- Preview sheets use compressed JPEG to reduce upload latency. The shared stickers and ZIP files remain PNG. 
-- Switching to a page that is not ready may still take time.
-- Search results show up to five packs per page, with previous/next controls and one-page lookahead. When LINE supplies no cover image, the result may display only its title.
+- Panels expire after **10 minutes**. 
+- Opening a panel downloads **the first 10 PNGs** and displays the first page before background loading the remaining pages. Loaded pages and individual PNGs are kept in memory only for that panel. 
+- Preview sheets use compressed JPEG to reduce upload latency. So, switching to a page that is not ready may still take time. The shared stickers and ZIP files remain PNG. 
+- Search results show up to **five packs per page**, with previous/next controls and one-page lookahead. If LINE search omits a cover, the bot loads it from the product page in the background and updates the result without delaying the first response.
 - Maximum **120 stickers** per pack, **3 MB** per PNG, and **30 MB** of downloaded images per pack. Discord's attachment limit still applies. Page flips must still upload a new preview to Discord, so network latency remains possible.
 - Share artwork only where you have permission to do so. The bot does not grant rights to LINE stickers.
