@@ -262,7 +262,7 @@ class AddOptions(discord.ui.View):
             return
         guild = interaction.guild
 
-        await interaction.response.defer(thinking=True, ephemeral=True)
+        await interaction.response.defer()
         try:
             if kind == "Emoji":
                 if any(item.name == self.name for item in await guild.fetch_emojis()):
@@ -279,7 +279,7 @@ class AddOptions(discord.ui.View):
                     raise ValueError("Sticker 圖片超過大小限制。")
                 await guild.create_sticker(name=self.name, emoji="🙂", description="LINE 貼圖",
                                            file=discord.File(io.BytesIO(image), filename="sticker.png"))
-            await interaction.followup.send(f"已新增至伺服器 {kind}：`{self.name}`", ephemeral=True)
+            await interaction.followup.send(f"已新增至伺服器 {kind}：`{self.name}`")
         except ValueError as exc:
             await interaction.followup.send(str(exc), ephemeral=True)
         except discord.Forbidden:
