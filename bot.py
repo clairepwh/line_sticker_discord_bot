@@ -371,12 +371,11 @@ class Panel(discord.ui.View):
             button = discord.ui.Button(label=str(number), row=offset // 5)
 
             async def send(interaction, selected_data=data, selected_id=sticker_id):
-                if len(selected_data) > interaction.filesize_limit:
-                    await interaction.response.send_message(
-                        "圖片超過 Discord 附件大小限制。", ephemeral=True)
-                    return
+                await interaction.response.defer()
             
-                await interaction.response.defer(thinking=True)
+                if len(selected_data) > interaction.filesize_limit:
+                    await interaction.followup.send("圖片超過 Discord 附件大小限制。", ephemeral=True)
+                    return
             
                 view = None
                 if interaction.guild:
@@ -386,9 +385,15 @@ class Panel(discord.ui.View):
                             any(item.name == name for item in guild.stickers)):
                         view = AddToServer(name, selected_data)
             
-                await interaction.edit_original_response(
-                    attachments=[discord.File(io.BytesIO(selected_data),
-                                              filename=f"sticker_{selected_id}.png")],
+                filename = f"sticker_{selected_id}.png"
+                embed = discord.Embed()
+                embed.set_author(name=interaction.user.display_name,
+                                 icon_url=interaction.user.display_avatar.url)
+                embed.set_image(url=f"attachment://{filename}")
+            
+                await interaction.followup.send(
+                    embed=embed,
+                    file=discord.File(io.BytesIO(selected_data), filename=filename),
                     view=view)
 
             button.callback = send
