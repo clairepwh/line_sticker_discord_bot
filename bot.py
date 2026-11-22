@@ -129,6 +129,20 @@ def contact_sheet(images, page):
     return output.getvalue()
 
 
+def expression_image(data, size):
+    try:
+        with Image.open(io.BytesIO(data)) as source:
+            image = source.convert("RGBA")
+            image.thumbnail((size, size), Image.Resampling.LANCZOS)
+        canvas = Image.new("RGBA", (size, size))
+        canvas.paste(image, ((size - image.width) // 2, (size - image.height) // 2))
+    except (OSError, Image.DecompressionBombError) as exc:
+        raise ValueError("無法處理貼圖圖片。") from exc
+    output = io.BytesIO()
+    canvas.save(output, "PNG", optimize=True)
+    return output.getvalue()
+
+
 def download_sticker(sticker):
     sticker_id, url = sticker
     with requests.Session() as session:
@@ -225,6 +239,83 @@ def error_message(exc):
     return str(exc) if isinstance(exc, ValueError) else "連線或圖片處理失敗，請稍後再試。"
 
 
+def add_permission_error(interaction):
+    guild = interaction.guild
+    if not guild or not interaction.user.guild_permissions.create_expressions:
+        return "你沒有新增伺服器表情的權限。"
+    if not guild.me or not guild.me.guild_permissions.create_expressions:
+        return "Bot 沒有新增伺服器表情的權限。"
+    return ""
+
+
+class AddOptions(discord.ui.View):
+    def __init__(self, name, data, guild):
+        super().__init__(timeout=120)
+        self.name, self.data = name, data
+        self.emoji.disabled = any(item.name == name for item in guild.emojis)
+        self.sticker.disabled = any(item.name == name for item in guild.stickers)
+
+    async def create(self, interaction, kind):
+        error = add_permission_error(interaction)
+        if error:
+            await interaction.response.send_message(error, ephemeral=True)
+            return
+        guild = interaction.guild
+
+        await interaction.response.defer(thinking=True, ephemeral=True)
+        try:
+            if kind == "Emoji":
+                if any(item.name == self.name for item in await guild.fetch_emojis()):
+                    raise ValueError("伺服器已經有這個 Emoji。")
+                image = await asyncio.to_thread(expression_image, self.data, 128)
+                if len(image) > 256 * 1024:
+                    raise ValueError("Emoji 圖片超過大小限制。")
+                await guild.create_custom_emoji(name=self.name, image=image)
+            else:
+                if any(item.name == self.name for item in await guild.fetch_stickers()):
+                    raise ValueError("伺服器已經有這個 Sticker。")
+                image = await asyncio.to_thread(expression_image, self.data, 320)
+                if len(image) > 512 * 1024:
+                    raise ValueError("Sticker 圖片超過大小限制。")
+                await guild.create_sticker(name=self.name, emoji="🙂", description="LINE 貼圖",
+                                           file=discord.File(io.BytesIO(image), filename="sticker.png"))
+            await interaction.followup.send(f"已新增至伺服器 {kind}：`{self.name}`", ephemeral=True)
+        except ValueError as exc:
+            await interaction.followup.send(str(exc), ephemeral=True)
+        except discord.Forbidden:
+            await interaction.followup.send("Bot 沒有新增伺服器表情的權限。", ephemeral=True)
+        except discord.HTTPException as exc:
+            print(f"新增 {kind} 失敗：{exc}")
+            await interaction.followup.send("新增失敗，請確認伺服器容量及圖片限制。", ephemeral=True)
+
+    @discord.ui.button(label="Emoji", style=discord.ButtonStyle.primary)
+    async def emoji(self, interaction, button):
+        await self.create(interaction, "Emoji")
+
+    @discord.ui.button(label="Sticker", style=discord.ButtonStyle.primary)
+    async def sticker(self, interaction, button):
+        await self.create(interaction, "Sticker")
+
+
+class AddToServer(discord.ui.View):
+    def __init__(self, name, data):
+        super().__init__(timeout=600)
+        self.name, self.data = name, data
+
+    @discord.ui.button(label="Add to Server", style=discord.ButtonStyle.secondary)
+    async def add(self, interaction, button):
+        error = add_permission_error(interaction)
+        if error:
+            await interaction.response.send_message(error, ephemeral=True)
+            return
+        guild = interaction.guild
+        view = AddOptions(self.name, self.data, guild)
+        if view.emoji.disabled and view.sticker.disabled:
+            await interaction.response.send_message("伺服器已收藏這張貼圖。", ephemeral=True)
+        else:
+            await interaction.response.send_message("要新增為 Emoji 還是 Sticker？", view=view, ephemeral=True)
+
+
 class Panel(discord.ui.View):
     def __init__(self, title, url, stickers, first_page):
         super().__init__(timeout=600)
@@ -269,8 +360,16 @@ class Panel(discord.ui.View):
                 if len(selected_data) > interaction.filesize_limit:
                     await interaction.followup.send("圖片超過 Discord 附件大小限制。", ephemeral=True)
                     return
+                view = None
+                if interaction.guild:
+                    name = f"gst_{selected_id}"
+                    guild = interaction.guild
+                    if not (any(item.name == name for item in guild.emojis) and
+                            any(item.name == name for item in guild.stickers)):
+                        view = AddToServer(name, selected_data)
                 await interaction.followup.send(
-                    file=discord.File(io.BytesIO(selected_data), filename=f"sticker_{selected_id}.png"))
+                    file=discord.File(io.BytesIO(selected_data), filename=f"sticker_{selected_id}.png"),
+                    view=view)
 
             button.callback = send
             self.add_item(button)
@@ -486,8 +585,9 @@ async def help(interaction: discord.Interaction, public: str = None):
         "`/panel url`：輸入 LINE STORE 貼圖網址，預覽貼圖並點擊對應編號發送圖片。\n\n"
         "`/stickers url folder_name`：將整包貼圖下載為 PNG，並打包成 ZIP。\n\n"
         "`/help`：查看這份說明。\n\n"
-        "私人／公開：預設使用動作只有自己看得到。若想分享給聊天室，在指令最後加入 `public`，並從選單選擇「公開」。從公開搜尋結果開啟的貼圖面板也會公開。\n"
-        "無論面板是否公開，點擊編號發出的 PNG 都會公開在頻道。\n\n"
+        "私人／公開：預設使用動作只有自己看得到。若想分享給聊天室，在指令最後加入 `public`，並從選單選擇「公開」。\n"
+        "從公開搜尋結果開啟的貼圖面板也會公開。無論面板是否公開，點擊編號發出的 PNG 都會公開在頻道。\n\n"
+        "Add to server：若貼圖尚未加入伺服器，可使用圖片下方的 Add to Server 新增為 Emoji 或 Sticker（需要建立表情權限）。\n\n"
         "貼圖面板每頁 10 張，約 10 分鐘後按鈕會失效。"
     ))
     await interaction.response.send_message(embed=embed, ephemeral=public is None)

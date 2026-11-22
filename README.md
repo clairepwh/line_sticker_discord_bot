@@ -11,7 +11,7 @@ A Python Discord bot for browsing LINE sticker packs and sharing static PNG prev
 
 `url` must be a LINE STORE sticker product link, as `https://store.line.me/stickershop/product/[PRODUCT_ID]`. Replace `PRODUCT_ID` as it is in the actual link.
 
-Downloads, search results and panels are private by default. To share a ZIP, search result, panel, or guide with the channel, add the optional `public` field at the end of the slash command and select the intended visibility choice from its choice menu. A panel opened from search inherits the same visibility, and the search message stays available. **Selected PNGs are always posted publicly** in the channel.
+Downloads, search results and panels are private by default. To share a ZIP, search result, panel, or guide with the channel, add the optional `public` field at the end of the slash command and select the intended visibility choice from its choice menu. A panel opened from search inherits the same visibility, and the search message stays available. **Selected PNGs are always posted publicly** in the channel. If either the emoji or sticker version is not yet saved to the server, its message includes an **Add to Server** button. Members with the Create Expressions permission can save it as a server emoji or sticker.
 
 Example: `/search keyword:貓咪 public:public`. Omit `public` to keep the results private.
 
@@ -31,7 +31,7 @@ Requires Python 3.10+.
    ```bash
    python bot.py
    ```
-4. Invite the application to your server with the `bot` and `applications.commands` scopes. Grant **View Channels**, **Send Messages**, and **Attach Files** permissions.
+4. Invite the application to your server with the `bot` and `applications.commands` scopes. Grant **View Channels**, **Send Messages**, **Attach Files**, and **Create Expressions** permissions for the bot. Members also need **Create Expressions** permissions to use Add to Server.
 
 **Never commit `.env` or share your bot token.**
 
@@ -46,14 +46,19 @@ Push `bot.py`, `requirements.txt`, and `README.md` to your GitHub repository. Fo
 
 Hosting availability and renewal requirements depend on your provider and plan.
 
+## Add to Server
+
+When the bot posts a PNG from `/panel`, click **Add to Server** and choose **Emoji** or **Sticker**. The image is resized for Discord automatically and saved under `gst_<LINE sticker ID>`. The bot checks existing emoji and sticker names to avoid saving the same LINE sticker twice in each format. It does not remove server expressions or overwrite existing ones. If the server has no free slots, the upload fails with a message.
+
 ## Limitations
 
 - Sending a PNG does not create a Discord-native sticker. People can invoke the bot without Nitro, subject to channel permissions.
 - Only static PNG previews are supported. Animations and sound are not included.
 - LINE STORE searches use an unofficial, changeable interface. If `/search` fails, find the product URL on LINE STORE and use `/panel` directly.
-- Panels expire after **10 minutes**. 
-- Opening a panel downloads **the first 10 PNGs** and displays the first page before background loading the remaining pages. Loaded pages and individual PNGs are kept in memory only for that panel. 
+- Panels expire after **10 minutes**.
+- Opening a panel downloads **the first 10 PNGs** and displays the first page before background loading the remaining pages. Loaded pages and individual PNGs are kept in memory only for that panel.
 - Preview sheets use compressed JPEG to reduce upload latency. So, switching to a page that is not ready may still take time. The shared stickers and ZIP files remain PNG. 
 - Search results show up to **five packs per page**, with previous/next controls and one-page lookahead. If LINE search omits a cover, the bot loads it from the product page in the background and updates the result without delaying the first response.
 - Maximum **120 stickers** per pack, **3 MB** per PNG, and **30 MB** of downloaded images per pack. Discord's attachment limit still applies. Page flips must still upload a new preview to Discord, so network latency remains possible.
+- Only stickers saved with their `gst_` identifier are recognized as already added; identical images under other names may not be detected.
 - Share artwork only where you have permission to do so. The bot does not grant rights to LINE stickers.
