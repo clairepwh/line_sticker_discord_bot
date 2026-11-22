@@ -386,7 +386,7 @@ class Panel(discord.ui.View):
                         view = AddToServer(name, selected_data)
             
                 filename = f"sticker_{selected_id}.png"
-                embed = discord.Embed()
+                embed = discord.Embed(color=interaction.user.color)
                 embed.set_author(name=interaction.user.display_name,
                                  icon_url=interaction.user.display_avatar.url)
                 embed.set_image(url=f"attachment://{filename}")
