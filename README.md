@@ -48,7 +48,7 @@ Hosting availability and renewal requirements depend on your provider and plan.
 
 ## Add to Server
 
-When the bot posts a PNG from `/panel`, click **Add to Server** and choose **Emoji** or **Sticker**. The image is resized for Discord automatically and saved under `gst_<LINE sticker ID>`. The bot checks existing emoji and sticker names to avoid saving the same LINE sticker twice in each format. It does not remove server expressions or overwrite existing ones. If the server has no free slots, the upload fails with a message.
+When the bot posts a PNG from `/panel`, click **Add to Server** and choose **Emoji** or **Sticker**. The image is resized for Discord automatically and saved under `gst_<LINE sticker ID>`. Stickers are cropped to remove transparent margins and proportionally scaled to fill the 320 × 320 canvas. The bot checks existing emoji and sticker names to avoid saving the same LINE sticker twice in each format. It does not remove server expressions or overwrite existing ones. If the server has no free slots, the upload fails with a message. 
 
 ## Limitations
 

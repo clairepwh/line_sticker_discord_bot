@@ -133,9 +133,21 @@ def expression_image(data, size):
     try:
         with Image.open(io.BytesIO(data)) as source:
             image = source.convert("RGBA")
-            image.thumbnail((size, size), Image.Resampling.LANCZOS)
+            if size == 320:
+                box = image.getchannel("A").getbbox()
+                if not box:
+                    raise ValueError("貼圖圖片是全透明的。")
+                image = image.crop(box)
+                scale = size / max(image.size)
+                image = image.resize(
+                    (max(1, round(image.width * scale)),
+                     max(1, round(image.height * scale))),
+                    Image.Resampling.LANCZOS)
+            else:
+                image.thumbnail((size, size), Image.Resampling.LANCZOS)
         canvas = Image.new("RGBA", (size, size))
-        canvas.paste(image, ((size - image.width) // 2, (size - image.height) // 2))
+        canvas.paste(image, ((size - image.width) // 2,
+                             (size - image.height) // 2))
     except (OSError, Image.DecompressionBombError) as exc:
         raise ValueError("無法處理貼圖圖片。") from exc
     output = io.BytesIO()
