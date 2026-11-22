@@ -15,7 +15,10 @@ from discord import app_commands
 from dotenv import load_dotenv
 from PIL import Image, ImageDraw, ImageFont
 
-HEADERS = {"User-Agent": "Mozilla/5.0"}
+HEADERS = {
+    "User-Agent": "Mozilla/5.0",
+    "Accept-Language": "zh-TW,zh-Hant;q=0.9,en;q=0.8"
+}
 PAGE_LIMIT = 4 * 1024 * 1024
 IMAGE_LIMIT = 3 * 1024 * 1024
 TOTAL_LIMIT = 30 * 1024 * 1024
