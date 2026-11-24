@@ -4,7 +4,6 @@ import json
 import os
 import re
 import zipfile
-import time
 from concurrent.futures import ThreadPoolExecutor
 from urllib.parse import quote, urljoin, urlsplit
 
@@ -44,7 +43,7 @@ def check_product(url):
 
 def check_image(url):
     check_host(url, "stickershop.line-scdn.net")
-    if not urlsplit(url).path.lower().endswith(".png"):
+    if not re.search(r"\.png(?:;compress=true)?$", urlsplit(url).path, re.I):
         raise ValueError("圖片網址不是 PNG。")
 
 
@@ -406,16 +405,13 @@ class Panel(discord.ui.View):
             async def change(interaction, direction=step):
                 await interaction.response.defer()
                 next_page = self.page + direction
-                start = time.perf_counter()
                 try:
                     if next_page not in self.cache:
                         await self.tasks[next_page]
-                    loaded = time.perf_counter()
                     self.page = next_page
                     self.buttons()
                     await interaction.edit_original_response(
                         embed=self.embed(), attachments=[self.preview_file()], view=self)
-                    print(f"面板翻頁：載入等待 {loaded-start:.2f}s，Discord 更新 {time.perf_counter()-loaded:.2f}s")
                 except (requests.RequestException, ValueError, OSError, discord.HTTPException) as exc:
                     await interaction.followup.send(f"無法切換頁面：{error_message(exc)}", ephemeral=True)
 
