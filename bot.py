@@ -87,6 +87,21 @@ def stickers_from_url(url):
         except (KeyError, ValueError, TypeError):
             continue
     if not stickers:
+        product_id = urlsplit(url).path.split("/")[3]
+        meta_url = f"https://stickershop.line-scdn.net/stickershop/v1/product/{product_id}/iphone/productInfo.meta"
+
+        with requests.Session() as session:
+            check_host(meta_url, "stickershop.line-scdn.net")
+            info = json.loads(fetch(session, meta_url, PAGE_LIMIT))
+
+        for item in info.get("stickers", []):
+            sticker_id = str(item.get("id", "")) if isinstance(item, dict) else str(item)
+            if not re.fullmatch(r"\d{1,20}", sticker_id):
+                continue
+
+            image_url = f"https://stickershop.line-scdn.net/stickershop/v1/sticker/{sticker_id}/android/sticker.png"
+            stickers.append((sticker_id, image_url))
+    if not stickers:
         raise ValueError("找不到貼圖。")
     if len(stickers) > LEN_LIMIT:
         raise ValueError(f"此貼圖包超過處理上限（{LEN_LIMIT} 張）。")
