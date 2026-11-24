@@ -5,7 +5,7 @@ import os
 import re
 import zipfile
 from concurrent.futures import ThreadPoolExecutor
-from urllib.parse import quote, urljoin, urlsplit
+from urllib.parse import parse_qs, quote, urljoin, urlsplit
 
 import discord
 import requests
@@ -189,35 +189,22 @@ def load_first_page(url):
     return title, stickers, load_page(stickers, 0)
 
 
-def search_packs(keyword, page=0):
+def search_packs(keyword, page=1, source=None):
     keyword = keyword.strip()
     if not 1 <= len(keyword) <= 60:
         raise ValueError("搜尋字詞須為 1–60 個字。")
-    packs = []
-    seen = set()
-    with requests.Session() as session:
-        try:
-            api = (f"https://store.line.me/api/search/sticker?query={quote(keyword)}"
-                   f"&offset={page * SEARCH_PER_PAGE}&limit=10&type=ALL&includeFacets=false")
-            items = json.loads(fetch(session, api, PAGE_LIMIT)).get("items", [])
-            for item in items:
-                pack_id = str(item.get("id", ""))
-                if not re.fullmatch(r"\d{1,20}", pack_id) or pack_id in seen:
-                    continue
-                seen.add(pack_id)
-                title = str(item.get("title") or f"貼圖 {pack_id}")[:100]
-                cover = item.get("mainImageUrl") or item.get("imageUrl") or ""
-                packs.append((title, f"https://store.line.me/stickershop/product/{pack_id}/zh-Hant",
-                              cover if isinstance(cover, str) and cover.startswith("https://") else ""))
-                if len(packs) > SEARCH_PER_PAGE:
-                    break
-        except (requests.RequestException, ValueError, TypeError, AttributeError):
-            pass
 
-        if not packs:
-            try:
-                url = f"https://store.line.me/search/sticker/zh-Hant?q={quote(keyword)}&page={page + 1}"
-                soup = BeautifulSoup(fetch(session, url, PAGE_LIMIT), "html.parser")
+    with requests.Session() as session:
+        if source != "api":
+            for path in ("search/sticker/zh-Hant", "search/zh-Hant"):
+                url = f"https://store.line.me/{path}?q={quote(keyword)}&page={page}"
+                try:
+                    soup = BeautifulSoup(fetch(session, url, PAGE_LIMIT), "html.parser")
+                except (requests.RequestException, ValueError):
+                    continue
+
+                packs = []
+                seen = set()
                 for link in soup.select('a[href*="/stickershop/product/"]'):
                     href = urljoin("https://store.line.me", link.get("href", ""))
                     try:
@@ -229,27 +216,45 @@ def search_packs(keyword, page=0):
                         continue
                     seen.add(pack_id)
                     img = link.select_one("img")
-                    title = link.get_text(" ", strip=True) or (img.get("alt", "") if img else "")
-                    cover = urljoin("https://store.line.me", (img.get("data-src") or img.get("src") or "")) if img else ""
-                    packs.append(((title or f"貼圖 {pack_id}")[:100], href, cover))
-                    if len(packs) > SEARCH_PER_PAGE:
-                        break
-            except (requests.RequestException, ValueError):
-                pass
+                    card = link.find_parent("li") or link
+                    title = (link.get("title", "") or card.get_text(" ", strip=True) or
+                             (img.get("alt", "") if img else ""))
+                    title = re.sub(r"\s*(?:NT\$|US\$)\s*\d+(?:\.\d+)?$", "", title).strip()
+                    cover = (img.get("data-src") or img.get("src") or "") if img else ""
+                    cover = urljoin("https://store.line.me", cover) if cover else ""
+                    if urlsplit(cover).hostname not in ("store.line.me", "stickershop.line-scdn.net"):
+                        cover = ""
+                    packs.append(((title or f"貼圖 {pack_id}")[:100],
+                                  f"https://store.line.me/stickershop/product/{pack_id}/zh-Hant", cover))
 
-        has_next = len(packs) > SEARCH_PER_PAGE
-        results = []
-        for title, url, cover in packs[:SEARCH_PER_PAGE]:
-            try:
-                host = urlsplit(cover).hostname
-                if host not in ("store.line.me", "stickershop.line-scdn.net"):
-                    cover = ""
-                else:
-                    check_host(cover, host)
-            except (ValueError, TypeError):
+                if packs:
+                    more = False
+                    for link in soup.select('a[href*="page="]'):
+                        target = urlsplit(urljoin(url, link.get("href", "")))
+                        values = parse_qs(target.query).get("page", [])
+                        if "/search" in target.path and values and values[0].isdigit() and int(values[0]) > page:
+                            more = True
+                            break
+                    return packs, more, "web"
+
+        offset = (page - 1) * SEARCH_PER_PAGE
+        api = (f"https://store.line.me/api/search/sticker?query={quote(keyword)}"
+               f"&offset={offset}&limit={SEARCH_PER_PAGE + 1}&type=ALL&includeFacets=false")
+        items = json.loads(fetch(session, api, PAGE_LIMIT)).get("items", [])
+        packs = []
+        seen = set()
+        for item in items:
+            pack_id = str(item.get("id", ""))
+            if not re.fullmatch(r"\d{1,20}", pack_id) or pack_id in seen:
+                continue
+            seen.add(pack_id)
+            title = str(item.get("title") or f"貼圖 {pack_id}")[:100]
+            cover = item.get("mainImageUrl") or item.get("imageUrl") or ""
+            if not isinstance(cover, str) or urlsplit(cover).hostname not in ("store.line.me", "stickershop.line-scdn.net"):
                 cover = ""
-            results.append((title, url, cover))
-    return results, has_next
+            packs.append((title, f"https://store.line.me/stickershop/product/{pack_id}/zh-Hant", cover))
+        return packs[:SEARCH_PER_PAGE], len(packs) > SEARCH_PER_PAGE, "api"
+
 
 def product_cover(url):
     check_product(url)
@@ -443,28 +448,45 @@ async def show_panel(interaction, url, private=True):
 
 
 class Results(discord.ui.View):
-    def __init__(self, keyword, packs, has_next, private=True):
+    def __init__(self, keyword, packs, has_next, source, private=True):
         super().__init__(timeout=600)
         self.keyword, self.page, self.private = keyword, 0, private
-        self.cache = {0: (packs, has_next)}
-        self.tasks = {}
+        self.items = packs
+        self.more, self.source, self.source_page = has_next, source, 1
+        self.loading = None
+        self.load_error = None
         self.cover_tasks = {}
         self.lock = asyncio.Lock()
-        self.refresh(packs, has_next)
+        self.refresh()
 
     def preload(self):
-        next_page = self.page + 1
-        if self.more and next_page not in self.cache and next_page not in self.tasks:
-            self.tasks[next_page] = asyncio.create_task(
-                asyncio.to_thread(search_packs, self.keyword, next_page))
+        if self.more and self.loading is None:
+            self.loading = asyncio.create_task(self.load_more())
+
+    async def load_more(self):
+        page = self.source_page + 1
+        try:
+            packs, more, source = await asyncio.to_thread(search_packs, self.keyword, page, self.source)
+            self.source = source
+            seen = {url for _, url, _ in self.items}
+            new = [pack for pack in packs if pack[1] not in seen]
+            self.items.extend(new)
+            self.more = more and bool(new)
+            self.source_page = page
+        except (requests.RequestException, ValueError, TypeError) as exc:
+            self.load_error = exc
+            self.more = False
+        finally:
+            self.loading = None
 
     def preload_covers(self, page):
         if page not in self.cover_tasks:
             self.cover_tasks[page] = asyncio.create_task(self.fill_covers(page))
 
     async def fill_covers(self, page):
-        packs, more = self.cache[page]
-        missing = [(i, url) for i, (_, url, cover) in enumerate(packs) if not cover]
+        start = page * SEARCH_PER_PAGE
+        missing = [(i, url) for i, (_, url, cover) in
+                   enumerate(self.items[start:start + SEARCH_PER_PAGE], start) if not cover]
         if not missing:
             return
 
@@ -474,25 +496,22 @@ class Results(discord.ui.View):
             except (requests.RequestException, ValueError, TypeError):
                 return i, ""
 
-        results = await asyncio.gather(*(load(i, url) for i, url in missing))
-        packs = list(packs)
-        for i, cover in results:
+        for i, cover in await asyncio.gather(*(load(i, url) for i, url in missing)):
             if cover:
-                title, url, _ = packs[i]
-                packs[i] = (title, url, cover)
-        self.cache[page] = (packs, more)
+                title, url, _ = self.items[i]
+                self.items[i] = (title, url, cover)
         async with self.lock:
             if self.page == page:
-                self.packs = packs
+                self.refresh()
                 try:
-                    await self.message.edit(embeds=self.embeds())
+                    await self.message.edit(embeds=self.embeds(), view=self)
                 except discord.HTTPException:
                     pass
 
     def embeds(self):
         embeds = []
-        for i, (title, url, cover) in enumerate(self.packs, 1):
-            embed = discord.Embed(title=f"{self.page * SEARCH_PER_PAGE + i}. {title}", url=url)
+        for i, (title, url, cover) in enumerate(self.packs, self.page * SEARCH_PER_PAGE + 1):
+            embed = discord.Embed(title=f"{i}. {title}", url=url)
             if cover:
                 embed.set_thumbnail(url=cover)
             embeds.append(embed)
@@ -501,11 +520,12 @@ class Results(discord.ui.View):
     def caption(self):
         return f"「{discord.utils.escape_markdown(self.keyword)}」的搜尋結果 · 第 {self.page + 1} 頁"
 
-    def refresh(self, packs, has_next):
-        self.packs, self.more = packs, has_next
+    def refresh(self):
+        start = self.page * SEARCH_PER_PAGE
+        self.packs = self.items[start:start + SEARCH_PER_PAGE]
         self.clear_items()
         selector = discord.ui.Select(placeholder="選擇貼圖包", row=0, options=[
-            discord.SelectOption(label=title, value=str(i)) for i, (title, _, _) in enumerate(packs)])
+            discord.SelectOption(label=title[:100], value=str(i)) for i, (title, _, _) in enumerate(self.packs)])
 
         async def selected(interaction):
             await interaction.response.defer(thinking=True, ephemeral=self.private)
@@ -517,25 +537,27 @@ class Results(discord.ui.View):
         selector.callback = selected
         self.add_item(selector)
         for step, label in ((-1, "上一頁"), (1, "下一頁")):
+            available = (self.page + 1) * SEARCH_PER_PAGE < len(self.items)
             button = discord.ui.Button(label=label, style=discord.ButtonStyle.primary,
-                                       disabled=(self.page == 0 if step == -1 else not has_next), row=1)
+                                       disabled=(self.page == 0 if step == -1 else not available and not self.more), row=1)
 
             async def change(interaction, direction=step):
                 await interaction.response.defer()
                 next_page = self.page + direction
                 try:
-                    if next_page not in self.cache:
-                        if next_page in self.tasks:
-                            self.cache[next_page] = await self.tasks.pop(next_page)
+                    while next_page * SEARCH_PER_PAGE >= len(self.items) and self.more:
+                        if self.loading:
+                            await self.loading
                         else:
-                            self.cache[next_page] = await asyncio.to_thread(search_packs, self.keyword, next_page)
-                    packs, more = self.cache[next_page]
-                    if not packs:
+                            await self.load_more()
+                    if self.load_error and next_page * SEARCH_PER_PAGE >= len(self.items):
+                        raise self.load_error
+                    if not 0 <= next_page * SEARCH_PER_PAGE < len(self.items):
                         await interaction.followup.send("沒有更多搜尋結果了。", ephemeral=True)
                         return
                     async with self.lock:
                         self.page = next_page
-                        self.refresh(packs, more)
+                        self.refresh()
                         await interaction.edit_original_response(
                             content=self.caption(), embeds=self.embeds(), view=self)
                     self.preload()
@@ -597,13 +619,13 @@ async def search(interaction: discord.Interaction, keyword: str, public: str = N
     private = public is None
     await interaction.response.defer(thinking=True, ephemeral=private)
     try:
-        packs, has_next = await asyncio.to_thread(search_packs, keyword)
+        packs, has_next, source = await asyncio.to_thread(search_packs, keyword)
         if not packs:
             await interaction.followup.send(
                 "目前無法取得 LINE 搜尋結果，可先在 LINE STORE 找到網址，再使用 `/panel`。",
                 ephemeral=private)
             return
-        view = Results(keyword, packs, has_next, private)
+        view = Results(keyword, packs, has_next, source, private)
         view.message = await interaction.followup.send(content=view.caption(), embeds=view.embeds(),
                                                        view=view, ephemeral=private, wait=True)
         view.preload()
